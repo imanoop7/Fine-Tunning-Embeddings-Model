@@ -280,8 +280,10 @@ if __name__ == "__main__":
     # Print evaluation results
     print("Evaluation results:")
     for evaluator in matryoshka_evaluators:
-        for metric, value in results[evaluator.name].items():
-            print(f"{evaluator.name}_{metric}: {value}")
+        evaluator_results = results.get(evaluator.name, {})
+        print(f"{evaluator.name}:")
+        for metric, value in evaluator_results.items():
+            print(f"  {metric}: {value}")
 
     # Evaluate the model
     results = evaluator(model)

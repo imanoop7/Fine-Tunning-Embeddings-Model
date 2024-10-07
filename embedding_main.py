@@ -11,8 +11,9 @@ from sentence_transformers.util import cos_sim
 from sentence_transformers.losses import MatryoshkaLoss, MultipleNegativesRankingLoss
 from sentence_transformers.training_args import BatchSamplers
 import torch
-import ollama
+import groq
 from nltk.tokenize import sent_tokenize
+import os
 
 # Download necessary NLTK data for text processing
 nltk.download('punkt')
@@ -97,18 +98,20 @@ def nltk_based_splitter(text: str, chunk_size: int, overlap: int) -> list:
 
     return chunks
 
-def generate_with_ollama(text_chunk: str, temperature: float, model_name: str):
+def generate_with_groq(text_chunk: str, temperature: float, model_name: str):
     """
-    Generate a question-answer pair from a text chunk using Ollama.
+    Generate a question-answer pair from a text chunk using Groq API.
     
     Args:
     text_chunk (str): Input text chunk.
     temperature (float): Temperature for text generation.
-    model_name (str): Name of the Ollama model to use.
+    model_name (str): Name of the Groq model to use.
     
     Returns:
     tuple: Generated question and answer.
     """
+    client = groq.Groq(api_key=os.environ["GROQ_API_KEY"])
+    
     prompt = f"""
     Based on the following text, generate one Question and its corresponding Answer.
     Please format the output as follows:
@@ -118,15 +121,21 @@ def generate_with_ollama(text_chunk: str, temperature: float, model_name: str):
     Text: {text_chunk}
     """
     
-    # Generate response using Ollama
-    response = ollama.generate(model=model_name, 
-                               prompt=prompt)
-    
-    time.sleep(5)  # Pause to avoid rate limiting, adjust as needed
+    chat_completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        model=model_name,
+        temperature=temperature,
+    )
 
-    # Extract question and answer from the response
+    response = chat_completion.choices[0].message.content
+    
     try:
-        question, answer = response['response'].split("Answer:", 1)
+        question, answer = response.split("Answer:", 1)
         question = question.replace("Question:", "").strip()
         answer = answer.strip()
     except ValueError:
@@ -141,43 +150,49 @@ def process_text_chunks(text_chunks: list, temperature: float, model_name: str):
     Args:
     text_chunks (list): List of text chunks.
     temperature (float): Temperature for text generation.
-    model_name (str): Name of the Ollama model to use.
+    model_name (str): Name of the Groq model to use.
     
     Returns:
     pandas.DataFrame: DataFrame containing text chunks, questions, and answers.
     """
     results = []
 
-    for chunk in text_chunks:
-        time.sleep(5) 
-        question, answer = generate_with_ollama(chunk, temperature, model_name)
+    for i, chunk in enumerate(text_chunks):
+        print(f"\nProcessing chunk {i+1}/{len(text_chunks)}:")
+        print(f"Chunk text (first 100 characters): {chunk[:100]}...")
+        time.sleep(5)  # Pause to avoid rate limiting
+        question, answer = generate_with_groq(chunk, temperature, model_name)
+        print(f"Generated Question: {question}")
+        print(f"Generated Answer: {answer}")
         results.append({"Text_Chunk": chunk, "Question": question, "Answer": answer})
 
     return pd.DataFrame(results)
 
 # Main execution
 if __name__ == "__main__":
-    print("Starting PDF processing...")
-    folder_path = "data"
-    all_text = process_pdfs_in_folder(folder_path)
-    print(f"Total text length: {len(all_text)} characters")
+    # print("Starting PDF processing...")
+    # folder_path = "data"
+    # all_text = process_pdfs_in_folder(folder_path)
+    # print(f"Total text length: {len(all_text)} characters")
 
-    print("Splitting text into chunks...")
-    chunks = nltk_based_splitter(text=all_text, chunk_size=2048, overlap=0)
-    print(f"Number of chunks: {len(chunks)}")
+    # print("Splitting text into chunks...")
+    # chunks = nltk_based_splitter(text=all_text, chunk_size=2048, overlap=0)
+    # print(f"Number of chunks: {len(chunks)}")
 
-    print("Generating Q&A pairs...")
-    df_qa_pairs = process_text_chunks(text_chunks=chunks,
-                                      temperature=0.7,
-                                      model_name="phi3")
-    print(f"Generated {len(df_qa_pairs)} Q&A pairs")
+    # print("Generating Q&A pairs...")
+    # df_qa_pairs = process_text_chunks(text_chunks=chunks,
+    #                                   temperature=0,
+    #                                   model_name="mixtral-8x7b-32768")  # Use appropriate Groq model name
+    # print(f"Generated {len(df_qa_pairs)} Q&A pairs")
+    # print("\nSample of generated Q&A pairs:")
+    # print(df_qa_pairs.head().to_string())
 
-    print("Saving Q&A pairs to CSV...")
-    df_qa_pairs.to_csv("ollama_generated_qa_pairs.csv", index=False)
-    print("CSV file saved successfully")
+    # print("Saving Q&A pairs to CSV...")
+    # df_qa_pairs.to_csv("groq_generated_qa_pairs.csv", index=False)
+    # print("CSV file 'groq_generated_qa_pairs.csv' saved successfully")
 
     # Load the dataset from the CSV file
-    dataset = load_dataset('csv', data_files='ollama_generated_qa_pairs.csv')
+    dataset = load_dataset('csv', data_files='groq_generated_qa_pairs.csv')
 
     def process_example(example, idx):
         """Process each example in the dataset."""
@@ -205,20 +220,22 @@ if __name__ == "__main__":
     args = SentenceTransformerTrainingArguments(
         output_dir="bge-finetuned",
         num_train_epochs=1,
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=16,
-        per_device_eval_batch_size=16,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        per_device_eval_batch_size=2,
         warmup_ratio=0.1,
-        learning_rate=2e-5,
-        lr_scheduler_type="cosine",
-        optim="adamw_torch_fused",
-        tf32=True,
-        bf16=True,
+        learning_rate=1e-5,
+        lr_scheduler_type="constant",
+        optim="adamw_torch",
+        fp16=False,  # Disable mixed precision training
+        bf16=False,  # Disable bfloat16
         batch_sampler=BatchSamplers.NO_DUPLICATES,
-        eval_strategy="epoch",
-        save_strategy="epoch",
+        eval_strategy="steps",
+        eval_steps=100,
+        save_strategy="steps",
+        save_steps=100,
         logging_steps=10,
-        save_total_limit=3,
+        save_total_limit=1,
         load_best_model_at_end=True,
         metric_for_best_model="eval_dim_128_cosine_ndcg@10",
     )
@@ -261,6 +278,20 @@ if __name__ == "__main__":
     results = evaluator(fine_tuned_model)
 
     # Print evaluation results
+    print("Evaluation results:")
+    for evaluator in matryoshka_evaluators:
+        for metric, value in results[evaluator.name].items():
+            print(f"{evaluator.name}_{metric}: {value}")
+
+    # Evaluate the model
+    results = evaluator(model)
+
+    # Print evaluation results
+    print("Evaluation results:")
     for dim in matryoshka_dimensions:
-        key = f"dim_{dim}_cosine"
-        print(f"{key}: {results[key]}")
+        for metric in ['ndcg@10', 'accuracy@1', 'accuracy@3', 'accuracy@5', 'accuracy@10']:
+            key = f"dim_{dim}_cosine_{metric}"
+            if key in results:
+                print(f"{key}: {results[key]}")
+            else:
+                print(f"{key}: Not available")

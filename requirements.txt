@@ -10,3 +10,6 @@ numpy
 tqdm
 transformers
 pdfminer
+groq
+huggingface_hub
+accelerate

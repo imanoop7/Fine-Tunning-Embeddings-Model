@@ -1,0 +1,12 @@
+nltk
+unstructured
+pandas
+datasets
+sentence-transformers
+torch
+ollama
+scikit-learn
+numpy
+tqdm
+transformers
+pdfminer
